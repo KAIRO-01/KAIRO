@@ -9,7 +9,7 @@ app = FastAPI(title="KAIRO backend")
 
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
 APP_TOKEN = os.environ.get("KAIRO_TOKEN", "")
-MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
 
 SYSTEM_PROMPT = (
     "You are KAIRO, a personal AI assistant. You are intelligent, professional, "
@@ -49,11 +49,7 @@ async def chat(req: ChatReq, x_kairo_token: str = Header(default="")):
     got = x_kairo_token.strip()
     want = APP_TOKEN.strip()
     if not want or not hmac.compare_digest(got.encode(), want.encode()):
-        # TEMPORARY debug: shows only lengths, never the token itself
-        raise HTTPException(
-            status_code=401,
-            detail=f"Unauthorized (debug: got {len(got)} chars, expected {len(want)} chars)",
-        )
+        raise HTTPException(status_code=401, detail="Unauthorized")
     if not GEMINI_KEY:
         raise HTTPException(status_code=500, detail="GEMINI_API_KEY not set")
 
@@ -67,11 +63,21 @@ async def chat(req: ChatReq, x_kairo_token: str = Header(default="")):
     body = {
         "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
         "contents": contents,
+        "generationConfig": {"maxOutputTokens": 1024},
     }
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent"
 
-    async with httpx.AsyncClient(timeout=60) as client:
-        r = await client.post(url, headers={"x-goog-api-key": GEMINI_KEY}, json=body)
+    try:
+        timeout = httpx.Timeout(120.0, connect=20.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            r = await client.post(
+                url, headers={"x-goog-api-key": GEMINI_KEY}, json=body
+            )
+    except httpx.HTTPError as e:
+        raise HTTPException(
+            status_code=504,
+            detail=f"Could not reach Gemini ({type(e).__name__}) using model {MODEL}",
+        )
 
     if r.status_code != 200:
         raise HTTPException(
@@ -82,5 +88,5 @@ async def chat(req: ChatReq, x_kairo_token: str = Header(default="")):
         parts = r.json()["candidates"][0]["content"]["parts"]
         text = "".join(p.get("text", "") for p in parts)
     except Exception:
-        text = "Sorry, I could not generate a reply."
+        text = ""
     return {"reply": text or "Sorry, I could not generate a reply."}
