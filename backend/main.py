@@ -46,8 +46,14 @@ def health():
 
 @app.post("/chat")
 async def chat(req: ChatReq, x_kairo_token: str = Header(default="")):
-    if not APP_TOKEN or not hmac.compare_digest(x_kairo_token, APP_TOKEN):
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    got = x_kairo_token.strip()
+    want = APP_TOKEN.strip()
+    if not want or not hmac.compare_digest(got.encode(), want.encode()):
+        # TEMPORARY debug: shows only lengths, never the token itself
+        raise HTTPException(
+            status_code=401,
+            detail=f"Unauthorized (debug: got {len(got)} chars, expected {len(want)} chars)",
+        )
     if not GEMINI_KEY:
         raise HTTPException(status_code=500, detail="GEMINI_API_KEY not set")
 
