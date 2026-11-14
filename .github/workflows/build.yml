@@ -40,11 +40,27 @@ jobs:
           gradle assembleDebug --console=plain > build.log 2>&1
           code=$?
           if [ $code -ne 0 ]; then
+            {
+              grep -n -E "^e: |What went wrong|Could not resolve|Could not find|error:|FAILURE" -A4 build.log | head -150
+              echo "----- LOG TAIL -----"
+              tail -30 build.log
+            } > error-summary.txt
             echo "===== KAIRO ERROR SUMMARY ====="
-            grep -n -E "^e: |What went wrong|Could not resolve|Could not find|error:|FAILURE" -A4 build.log | head -80
+            cat error-summary.txt
             echo "===== END SUMMARY ====="
           fi
           exit $code
+
+      - name: Publish error summary
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [ -f error-summary.txt ] || echo "Build gradle se pehle fail hua (model download ya setup step)." > error-summary.txt
+          gh release create "error-${{ github.run_number }}" \
+            --title "KAIRO build ${{ github.run_number }} ERROR" \
+            --notes-file error-summary.txt \
+            --prerelease
 
       - name: Publish APK as a release
         env:
