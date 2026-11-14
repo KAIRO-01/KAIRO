@@ -26,6 +26,14 @@ jobs:
         with:
           gradle-version: 8.10.2
 
+      - name: Add Vosk wake word model
+        run: |
+          mkdir -p app/src/main/assets
+          curl -L -o model.zip https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip
+          unzip -q model.zip
+          mv vosk-model-small-en-us-0.15 app/src/main/assets/model-en-us
+          uuidgen > app/src/main/assets/model-en-us/uuid
+
       - name: Build debug APK
         run: |
           set +e
