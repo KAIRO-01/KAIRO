@@ -5,12 +5,12 @@ import org.vosk.Model
 import org.vosk.Recognizer
 import org.vosk.android.SpeechService
 import org.vosk.android.StorageService
+import java.util.Locale
 
-/** Offline listener for "Hey Cairo" (sounds like "Hey KAIRO") and "stop", built on Vosk. */
+/** Offline listener: "Hey Cairo" (wake) aur "stop" jaise chhote words pakadta hai (Vosk). */
 class WakeWordEngine(
     private val context: Context,
-    private val onWake: () -> Unit,
-    private val onStop: () -> Unit,
+    private val onHeard: (String) -> Unit,
     private val onStatus: (String) -> Unit
 ) : org.vosk.android.RecognitionListener {
 
@@ -19,15 +19,11 @@ class WakeWordEngine(
     private var loading = false
     private var wantRunning = false
 
-    @Volatile
-    private var suppress = false
-
     val isActive: Boolean
         get() = wantRunning
 
     fun start() {
         wantRunning = true
-        suppress = false
         val m = model
         if (m != null) {
             begin(m)
@@ -54,11 +50,14 @@ class WakeWordEngine(
     private fun begin(m: Model) {
         try {
             service?.shutdown()
-            val rec = Recognizer(m, 16000.0f, "[\"hey cairo\", \"stop\", \"[unk]\"]")
+            val rec = Recognizer(
+                m, 16000.0f,
+                "[\"hey cairo\", \"hi cairo\", \"okay cairo\", \"cairo\", \"stop\", \"cancel\", \"enough\", \"quiet\", \"[unk]\"]"
+            )
             val s = SpeechService(rec, 16000.0f)
             service = s
             s.startListening(this)
-            onStatus("READY")
+            onStatus("")
         } catch (e: Exception) {
             wantRunning = false
             onStatus("Wake word start nahi hua: " + e.message)
@@ -76,28 +75,22 @@ class WakeWordEngine(
         service = null
     }
 
-    private fun check(h: String?, final: Boolean) {
-        if (h == null) return
-        if (suppress) {
-            if (final) suppress = false
-            return
+    private fun check(h: String?) {
+        if (h == null || !wantRunning) return
+        val t = h.lowercase(Locale.ROOT)
+        if (t.contains("cairo") || t.contains("stop") || t.contains("cancel") ||
+            t.contains("enough") || t.contains("quiet")
+        ) {
+            onHeard(t)
         }
-        val hit = when {
-            h.contains("cairo", ignoreCase = true) -> 1
-            h.contains("stop", ignoreCase = true) -> 2
-            else -> 0
-        }
-        if (hit == 0) return
-        suppress = !final
-        if (hit == 1) onWake() else onStop()
     }
 
     override fun onPartialResult(hypothesis: String?) {
-        check(hypothesis, false)
+        check(hypothesis)
     }
 
     override fun onResult(hypothesis: String?) {
-        check(hypothesis, true)
+        check(hypothesis)
     }
 
     override fun onFinalResult(hypothesis: String?) {}
