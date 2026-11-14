@@ -4,6 +4,8 @@ import android.animation.ValueAnimator
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -12,6 +14,11 @@ import android.graphics.Shader
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Bundle
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
@@ -27,6 +34,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.Locale
 import kotlin.concurrent.thread
 
 class OrbView(context: Context) : View(context) {
@@ -44,8 +52,8 @@ class OrbView(context: Context) : View(context) {
         }
     }
 
-    fun setThinking(thinking: Boolean) {
-        animator.duration = if (thinking) 700L else 2400L
+    fun setSpeed(ms: Long) {
+        animator.duration = ms
     }
 
     override fun onAttachedToWindow() {
@@ -94,6 +102,7 @@ class MainActivity : Activity() {
 
     companion object {
         const val DEFAULT_URL = "https://kairo-backend-uyp9.onrender.com"
+        const val REQ_MIC = 1
     }
 
     private val history = mutableListOf<Pair<String, String>>()
@@ -103,7 +112,18 @@ class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var input: EditText
     private lateinit var sendBtn: Button
+    private lateinit var micBtn: Button
+    private lateinit var langBtn: TextView
+
     private var busy = false
+    private var listening = false
+    private var speaking = false
+    private var note: String? = null
+    private var hindi = true
+
+    private var tts: TextToSpeech? = null
+    private var ttsReady = false
+    private var recognizer: SpeechRecognizer? = null
 
     private val prefs by lazy { getSharedPreferences("kairo", Context.MODE_PRIVATE) }
 
@@ -111,6 +131,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        hindi = prefs.getBoolean("hindi", true)
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -139,6 +160,18 @@ class MainActivity : Activity() {
             setTextColor(Color.parseColor("#E8F0FF"))
         }
         bar.addView(title, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        langBtn = TextView(this).apply {
+            text = if (hindi) "HI" else "EN"
+            textSize = 16f
+            setTextColor(Color.parseColor("#2979FF"))
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            setOnClickListener {
+                hindi = !hindi
+                prefs.edit().putBoolean("hindi", hindi).apply()
+                text = if (hindi) "HI" else "EN"
+            }
+        }
+        bar.addView(langBtn)
         val gear = TextView(this).apply {
             text = "\u2699"
             textSize = 26f
@@ -180,7 +213,7 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER_VERTICAL
         }
         input = EditText(this).apply {
-            hint = "KAIRO se kuch poocho..."
+            hint = "Likho ya MIC dabao..."
             setHintTextColor(Color.parseColor("#5A6C99"))
             setTextColor(Color.parseColor("#E8F0FF"))
             maxLines = 4
@@ -192,9 +225,14 @@ class MainActivity : Activity() {
             }
         }
         row.addView(input, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        micBtn = Button(this).apply {
+            text = "MIC"
+            setOnClickListener { onMicClicked() }
+        }
+        row.addView(micBtn)
         sendBtn = Button(this).apply {
-            text = "Send"
-            setOnClickListener { sendMessage() }
+            text = "SEND"
+            setOnClickListener { sendMessage(false) }
         }
         row.addView(sendBtn)
         root.addView(
@@ -204,9 +242,197 @@ class MainActivity : Activity() {
 
         setContentView(root)
 
-        addBubble("assistant", "Namaste! Main KAIRO hoon. Kuch bhi poochho.")
+        tts = TextToSpeech(this) { s -> ttsReady = (s == TextToSpeech.SUCCESS) }
+
+        addBubble("assistant", "Namaste! Main KAIRO hoon. MIC dabake bolo ya likh ke poochho.")
         if ((prefs.getString("token", "") ?: "").isBlank()) showSettings()
     }
+
+    override fun onDestroy() {
+        recognizer?.destroy()
+        tts?.stop()
+        tts?.shutdown()
+        super.onDestroy()
+    }
+
+    // ---------- UI state ----------
+
+    private fun refreshUi() {
+        when {
+            listening -> {
+                status.text = "Sun raha hoon... boliye"
+                orb.setSpeed(1100L)
+                micBtn.text = "STOP"
+            }
+            busy -> {
+                status.text = "KAIRO soch raha hai... (pehli baar 1 minute lag sakta hai)"
+                orb.setSpeed(600L)
+                micBtn.text = "MIC"
+            }
+            speaking -> {
+                status.text = "KAIRO bol raha hai... (MIC dabake rok sakte ho)"
+                orb.setSpeed(900L)
+                micBtn.text = "MIC"
+            }
+            else -> {
+                status.text = note ?: "Ready"
+                orb.setSpeed(2400L)
+                micBtn.text = "MIC"
+            }
+        }
+        sendBtn.isEnabled = !busy
+    }
+
+    // ---------- Voice: listening ----------
+
+    private fun onMicClicked() {
+        when {
+            listening -> recognizer?.stopListening()
+            busy -> {}
+            else -> {
+                stopSpeaking()
+                startListening()
+            }
+        }
+    }
+
+    private fun startListening() {
+        note = null
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+            note = "Is phone mein speech recognition service nahi mili"
+            refreshUi()
+            return
+        }
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(android.Manifest.permission.RECORD_AUDIO), REQ_MIC)
+            return
+        }
+        recognizer?.destroy()
+        val r = SpeechRecognizer.createSpeechRecognizer(this)
+        r.setRecognitionListener(listener)
+        recognizer = r
+
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, if (hindi) "hi-IN" else "en-IN")
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+        }
+        listening = true
+        input.setText("")
+        refreshUi()
+        r.startListening(intent)
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQ_MIC) {
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                startListening()
+            } else {
+                note = "Mic permission chahiye: Settings > Apps > KAIRO > Permissions mein allow karo"
+                refreshUi()
+            }
+        }
+    }
+
+    private val listener = object : RecognitionListener {
+        override fun onReadyForSpeech(params: Bundle?) {}
+        override fun onBeginningOfSpeech() {}
+        override fun onRmsChanged(rmsdB: Float) {}
+        override fun onBufferReceived(buffer: ByteArray?) {}
+        override fun onEndOfSpeech() {}
+        override fun onEvent(eventType: Int, params: Bundle?) {}
+
+        override fun onPartialResults(partialResults: Bundle?) {
+            val p = partialResults
+                ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                ?.firstOrNull()
+            if (!p.isNullOrBlank()) input.setText(p)
+        }
+
+        override fun onResults(results: Bundle?) {
+            listening = false
+            val said = results
+                ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                ?.firstOrNull()
+                ?.trim()
+                .orEmpty()
+            if (said.isEmpty()) {
+                note = "Kuch samajh nahi aaya, MIC dabake dobara bolo"
+                refreshUi()
+                return
+            }
+            input.setText(said)
+            sendMessage(true)
+        }
+
+        override fun onError(error: Int) {
+            listening = false
+            note = when (error) {
+                SpeechRecognizer.ERROR_NO_MATCH -> "Samajh nahi aaya, dobara bolo"
+                SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "Kuch suna nahi, MIC dabake dobara bolo"
+                SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT ->
+                    "Speech ke liye internet chahiye"
+                SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Mic permission allow karo"
+                SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Recognizer busy hai, thodi der baad try karo"
+                else -> "Speech error code $error"
+            }
+            refreshUi()
+        }
+    }
+
+    // ---------- Voice: speaking ----------
+
+    private fun speak(content: String) {
+        val engine = tts
+        if (engine == null || !ttsReady) {
+            note = "Text-to-speech abhi ready nahi hai"
+            refreshUi()
+            return
+        }
+        val devanagari = content.any { it in '\u0900'..'\u097F' }
+        val loc = Locale.forLanguageTag(if (devanagari) "hi-IN" else "en-IN")
+        val res = engine.setLanguage(loc)
+        if (res == TextToSpeech.LANG_MISSING_DATA || res == TextToSpeech.LANG_NOT_SUPPORTED) {
+            note = "Is bhasha ki awaaz phone mein install nahi hai (Settings > Text-to-speech)"
+            refreshUi()
+            return
+        }
+        engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) {
+                runOnUiThread {
+                    speaking = true
+                    refreshUi()
+                }
+            }
+
+            override fun onDone(utteranceId: String?) {
+                runOnUiThread {
+                    speaking = false
+                    refreshUi()
+                }
+            }
+
+            override fun onError(utteranceId: String?) {
+                runOnUiThread {
+                    speaking = false
+                    refreshUi()
+                }
+            }
+        })
+        engine.speak(content, TextToSpeech.QUEUE_FLUSH, null, "kairo-utt")
+    }
+
+    private fun stopSpeaking() {
+        tts?.stop()
+        speaking = false
+    }
+
+    // ---------- Settings ----------
 
     private fun showSettings() {
         val box = LinearLayout(this).apply {
@@ -240,6 +466,8 @@ class MainActivity : Activity() {
             .show()
     }
 
+    // ---------- Chat ----------
+
     private fun addBubble(role: String, content: String) {
         val isUser = role == "user"
         val tv = TextView(this).apply {
@@ -265,14 +493,7 @@ class MainActivity : Activity() {
         scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
     }
 
-    private fun setBusy(value: Boolean) {
-        busy = value
-        orb.setThinking(value)
-        status.text = if (value) "KAIRO soch raha hai... (pehli baar 1 minute lag sakta hai)" else "Ready"
-        sendBtn.isEnabled = !value
-    }
-
-    private fun sendMessage() {
+    private fun sendMessage(fromVoice: Boolean) {
         if (busy) return
         val text = input.text.toString().trim()
         if (text.isEmpty()) return
@@ -283,10 +504,13 @@ class MainActivity : Activity() {
         }
         val base = (prefs.getString("url", DEFAULT_URL) ?: DEFAULT_URL).ifBlank { DEFAULT_URL }
 
+        stopSpeaking()
+        note = null
         input.setText("")
         history.add("user" to text)
         addBubble("user", text)
-        setBusy(true)
+        busy = true
+        refreshUi()
 
         val snapshot = history.toList()
         thread {
@@ -302,7 +526,9 @@ class MainActivity : Activity() {
                     history.removeAt(history.size - 1)
                 }
                 addBubble("assistant", result.second)
-                setBusy(false)
+                busy = false
+                refreshUi()
+                if (result.first && fromVoice) speak(result.second)
             }
         }
     }
