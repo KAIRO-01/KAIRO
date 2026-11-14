@@ -7,7 +7,10 @@ object KairoLog {
     val items = mutableListOf<Pair<String, String>>()
 
     @Volatile
-    var status: String = "KAIRO band hai. LISTEN ON dabao."
+    private var statusValue: String = "KAIRO band hai. LISTEN ON dabao."
+
+    val status: String
+        get() = statusValue
 
     @Volatile
     var mode: Int = 0 // 0 idle, 1 listening, 2 thinking, 3 speaking
@@ -20,7 +23,7 @@ object KairoLog {
     }
 
     fun setStatus(s: String) {
-        status = s
+        statusValue = s
         onChange?.invoke()
     }
 }
