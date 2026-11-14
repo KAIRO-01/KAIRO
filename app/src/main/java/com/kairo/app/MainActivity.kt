@@ -18,12 +18,11 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
-import kotlin.concurrent.thread
 
-class MainActivity : Activity() {
+class MainActivity : Activity(), KairoService.Ui {
 
     companion object {
-        const val DEFAULT_URL = Brain.DEFAULT_URL
+        const val DEFAULT_URL = "https://kairo-backend-uyp9.onrender.com"
         const val REQ_PERM = 1
     }
 
@@ -35,12 +34,11 @@ class MainActivity : Activity() {
     private lateinit var sendBtn: Button
     private lateinit var micBtn: Button
     private lateinit var langBtn: TextView
-    private lateinit var listenBtn: TextView
+    private lateinit var wakeBtn: TextView
 
     private var hindi = true
-    private var shown = 0
-    private var typedBusy = false
-    private var pendingAction = 0
+    private var pendingAction: String? = null
+    private var pendingText: String? = null
 
     private val prefs by lazy { getSharedPreferences("kairo", Context.MODE_PRIVATE) }
 
@@ -77,14 +75,14 @@ class MainActivity : Activity() {
             setTextColor(Color.parseColor("#E8F0FF"))
         }
         bar.addView(title, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        listenBtn = TextView(this).apply {
-            text = "LISTEN OFF"
+        wakeBtn = TextView(this).apply {
+            text = "WAKE OFF"
             textSize = 13f
             setTextColor(Color.parseColor("#2979FF"))
             setPadding(dp(10), dp(8), dp(10), dp(8))
-            setOnClickListener { toggleService() }
+            setOnClickListener { toggleWake() }
         }
-        bar.addView(listenBtn)
+        bar.addView(wakeBtn)
         langBtn = TextView(this).apply {
             text = if (hindi) "HI" else "EN"
             textSize = 16f
@@ -167,9 +165,9 @@ class MainActivity : Activity() {
 
         setContentView(root)
 
-        if (KairoLog.items.isEmpty()) {
-            KairoLog.items.add(
-                "assistant" to "Namaste! Main KAIRO hoon. MIC dabake bolo, likh ke poochho, ya LISTEN ON karke 'Hey KAIRO' bolo."
+        if (KairoService.bubbles.isEmpty()) {
+            KairoService.bubbles.add(
+                "assistant" to "Namaste! Main KAIRO hoon. MIC dabake bolo, likh ke poochho, ya WAKE ON karke 'Hey KAIRO' bolo."
             )
         }
         if ((prefs.getString("token", "") ?: "").isBlank()) showSettings()
@@ -177,42 +175,60 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        KairoLog.onChange = { runOnUiThread { sync() } }
         messages.removeAllViews()
-        shown = 0
-        sync()
-    }
-
-    override fun onPause() {
-        KairoLog.onChange = null
-        super.onPause()
-    }
-
-    // ---------- Screen update ----------
-
-    private fun sync() {
-        val items = KairoLog.items.toList()
-        if (items.size < shown) {
-            messages.removeAllViews()
-            shown = 0
-        }
-        for (i in shown until items.size) {
-            addBubbleView(items[i].first, items[i].second)
-        }
-        shown = items.size
+        for ((r, t) in KairoService.bubbles) addBubbleView(r, t)
+        KairoService.ui = this
         refreshUi()
     }
 
+    override fun onPause() {
+        if (KairoService.ui === this) KairoService.ui = null
+        super.onPause()
+    }
+
+    // ---------- KairoService.Ui ----------
+
+    override fun onBubble(role: String, text: String) {
+        if (role == "user") input.setText("")
+        addBubbleView(role, text)
+    }
+
+    override fun onState() {
+        refreshUi()
+    }
+
+    override fun onPartial(text: String) {
+        input.setText(text)
+    }
+
+    // ---------- UI state ----------
+
     private fun refreshUi() {
-        status.text = KairoLog.status
-        when (KairoLog.mode) {
-            1 -> orb.setSpeed(1100L)
-            2 -> orb.setSpeed(600L)
-            3 -> orb.setSpeed(900L)
-            else -> orb.setSpeed(2400L)
+        when {
+            KairoService.listening -> {
+                status.text = "Sun raha hoon... boliye"
+                orb.setSpeed(1100L)
+                micBtn.text = "STOP"
+            }
+            KairoService.busy -> {
+                status.text = "KAIRO soch raha hai... (pehli baar 1 minute lag sakta hai)"
+                orb.setSpeed(600L)
+                micBtn.text = "MIC"
+            }
+            KairoService.speaking -> {
+                status.text = "KAIRO bol raha hai... (bolke rok sakte ho: stop)"
+                orb.setSpeed(900L)
+                micBtn.text = "MIC"
+            }
+            else -> {
+                val on = KairoService.running && KairoService.wakeOn
+                status.text = KairoService.note ?: (if (on) "Wake word ON: bolo 'Hey KAIRO'" else "Ready")
+                orb.setSpeed(2400L)
+                micBtn.text = "MIC"
+            }
         }
-        listenBtn.text = if (KairoService.running) "LISTEN ON" else "LISTEN OFF"
-        sendBtn.isEnabled = !typedBusy
+        sendBtn.isEnabled = !KairoService.busy
+        wakeBtn.text = if (KairoService.running && KairoService.wakeOn) "WAKE ON" else "WAKE OFF"
     }
 
     // ---------- Actions ----------
@@ -220,13 +236,16 @@ class MainActivity : Activity() {
     private fun hasMic(): Boolean =
         checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
 
-    private fun ensurePerms(action: Int): Boolean {
-        if (hasMic()) return true
+    private fun runWithPerms(action: String, text: String?) {
+        if (hasMic()) {
+            KairoService.send(this, action, text)
+            return
+        }
         pendingAction = action
+        pendingText = text
         val perms = mutableListOf(android.Manifest.permission.RECORD_AUDIO)
         if (Build.VERSION.SDK_INT >= 33) perms.add("android.permission.POST_NOTIFICATIONS")
         requestPermissions(perms.toTypedArray(), REQ_PERM)
-        return false
     }
 
     override fun onRequestPermissionsResult(
@@ -237,32 +256,32 @@ class MainActivity : Activity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode != REQ_PERM) return
         val action = pendingAction
-        pendingAction = 0
+        val text = pendingText
+        pendingAction = null
+        pendingText = null
         if (hasMic()) {
-            if (action == 1) KairoService.start(this)
-            if (action == 2) KairoService.listenNow(this)
+            if (action != null) KairoService.send(this, action, text)
         } else {
-            KairoLog.setStatus("Mic permission chahiye: Settings > Apps > KAIRO > Permissions mein allow karo")
+            KairoService.note = "Mic permission chahiye: Settings > Apps > KAIRO > Permissions mein allow karo"
+            refreshUi()
         }
     }
 
-    private fun toggleService() {
-        if (KairoService.running) {
-            KairoService.stop(this)
-            refreshUi()
-            return
+    private fun toggleWake() {
+        if (KairoService.running && KairoService.wakeOn) {
+            KairoService.send(this, KairoService.ACTION_WAKE_OFF)
+        } else {
+            runWithPerms(KairoService.ACTION_WAKE_ON, null)
         }
-        if (!ensurePerms(1)) return
-        KairoService.start(this)
     }
 
     private fun onMicClicked() {
-        if (!ensurePerms(2)) return
-        KairoService.listenNow(this)
+        if (KairoService.busy) return
+        runWithPerms(KairoService.ACTION_MIC, null)
     }
 
     private fun sendTyped() {
-        if (typedBusy) return
+        if (KairoService.busy) return
         val text = input.text.toString().trim()
         if (text.isEmpty()) return
         val token = (prefs.getString("token", "") ?: "").trim()
@@ -271,22 +290,7 @@ class MainActivity : Activity() {
             return
         }
         input.setText("")
-        KairoLog.add("user", text)
-        typedBusy = true
-        refreshUi()
-        val app = applicationContext
-        thread {
-            val r = try {
-                Brain.respond(app, text)
-            } catch (e: Exception) {
-                Pair(false, "Error: " + e.message)
-            }
-            runOnUiThread {
-                KairoLog.add("assistant", r.second)
-                typedBusy = false
-                refreshUi()
-            }
-        }
+        runWithPerms(KairoService.ACTION_SEND, text)
     }
 
     // ---------- Settings ----------
