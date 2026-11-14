@@ -53,7 +53,10 @@ class WakeWordEngine(
     private fun begin(m: Model) {
         try {
             service?.shutdown()
-            val rec = Recognizer(m, 16000.0f, "[\"hey cairo\", \"[unk]\"]")
+            val rec = Recognizer(
+                m, 16000.0f,
+                "[\"hey cairo\", \"hi cairo\", \"okay cairo\", \"cairo\", \"[unk]\"]"
+            )
             val s = SpeechService(rec, 16000.0f)
             service = s
             s.startListening(this)
