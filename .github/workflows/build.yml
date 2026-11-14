@@ -27,7 +27,16 @@ jobs:
           gradle-version: 8.10.2
 
       - name: Build debug APK
-        run: gradle assembleDebug --stacktrace
+        run: |
+          set +e
+          gradle assembleDebug --console=plain > build.log 2>&1
+          code=$?
+          if [ $code -ne 0 ]; then
+            echo "===== KAIRO ERROR SUMMARY ====="
+            grep -n -E "^e: |What went wrong|Could not resolve|Could not find|error:|FAILURE" -A4 build.log | head -80
+            echo "===== END SUMMARY ====="
+          fi
+          exit $code
 
       - name: Publish APK as a release
         env:
@@ -36,4 +45,4 @@ jobs:
           cp app/build/outputs/apk/debug/app-debug.apk KAIRO-debug.apk
           gh release create "build-${{ github.run_number }}" KAIRO-debug.apk \
             --title "KAIRO build ${{ github.run_number }}" \
-            --notes "Debug APK, phase 1"
+            --notes "Debug APK"
