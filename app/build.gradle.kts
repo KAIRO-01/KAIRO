@@ -23,3 +23,8 @@ android {
         jvmTarget = "17"
     }
 }
+
+dependencies {
+    implementation("com.alphacephei:vosk-android:0.3.75")
+    implementation("com.alphacephei:vosk-model-en:0.3.70")
+}
