@@ -32,6 +32,10 @@ import android.widget.ScrollView
 import android.widget.TextView
 import org.json.JSONArray
 import org.json.JSONObject
+import org.vosk.Model
+import org.vosk.Recognizer
+import org.vosk.android.SpeechService
+import org.vosk.android.StorageService
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Locale
@@ -98,11 +102,106 @@ class OrbView(context: Context) : View(context) {
     }
 }
 
+/** Offline wake word listener ("Hey Cairo" sounds like "Hey KAIRO"), built on Vosk. */
+class WakeWordEngine(
+    private val context: Context,
+    private val onWake: () -> Unit,
+    private val onStatus: (String) -> Unit
+) : org.vosk.android.RecognitionListener {
+
+    private var model: Model? = null
+    private var service: SpeechService? = null
+    private var loading = false
+    private var wantRunning = false
+
+    @Volatile
+    private var triggered = false
+
+    val isActive: Boolean
+        get() = wantRunning
+
+    fun start() {
+        wantRunning = true
+        triggered = false
+        val m = model
+        if (m != null) {
+            begin(m)
+            return
+        }
+        if (loading) return
+        loading = true
+        onStatus("Wake word model load ho raha hai (pehli baar 30-60 second lag sakte hain)...")
+        StorageService.unpack(
+            context, "model-en-us", "model",
+            StorageService.Callback<Model> { loaded ->
+                loading = false
+                model = loaded
+                if (wantRunning) begin(loaded)
+            },
+            StorageService.Callback<java.io.IOException> { e ->
+                loading = false
+                wantRunning = false
+                onStatus("Wake model error: " + e.message)
+            }
+        )
+    }
+
+    private fun begin(m: Model) {
+        try {
+            service?.shutdown()
+            val rec = Recognizer(m, 16000.0f, "[\"hey cairo\", \"[unk]\"]")
+            val s = SpeechService(rec, 16000.0f)
+            service = s
+            s.startListening(this)
+            onStatus("Wake word ON: bolo 'Hey KAIRO' (Hey Cairo)")
+        } catch (e: Exception) {
+            wantRunning = false
+            onStatus("Wake word start nahi hua: " + e.message)
+        }
+    }
+
+    fun stop() {
+        wantRunning = false
+        try {
+            service?.stop()
+            service?.shutdown()
+        } catch (e: Exception) {
+            // ignore
+        }
+        service = null
+    }
+
+    private fun check(h: String?) {
+        if (h == null || triggered) return
+        if (h.contains("cairo", ignoreCase = true)) {
+            triggered = true
+            onWake()
+        }
+    }
+
+    override fun onPartialResult(hypothesis: String?) {
+        check(hypothesis)
+    }
+
+    override fun onResult(hypothesis: String?) {
+        check(hypothesis)
+    }
+
+    override fun onFinalResult(hypothesis: String?) {}
+
+    override fun onError(exception: Exception?) {
+        onStatus("Wake word error: " + exception?.message)
+    }
+
+    override fun onTimeout() {}
+}
+
 class MainActivity : Activity() {
 
     companion object {
         const val DEFAULT_URL = "https://kairo-backend-uyp9.onrender.com"
         const val REQ_MIC = 1
+        const val REQ_WAKE = 2
     }
 
     private val history = mutableListOf<Pair<String, String>>()
@@ -114,12 +213,18 @@ class MainActivity : Activity() {
     private lateinit var sendBtn: Button
     private lateinit var micBtn: Button
     private lateinit var langBtn: TextView
+    private lateinit var wakeBtn: TextView
 
     private var busy = false
     private var listening = false
     private var speaking = false
     private var note: String? = null
     private var hindi = true
+
+    private var wakeOn = false
+    private var resumed = false
+    private var listenAfter = false
+    private var wake: WakeWordEngine? = null
 
     private var tts: TextToSpeech? = null
     private var ttsReady = false
@@ -160,11 +265,19 @@ class MainActivity : Activity() {
             setTextColor(Color.parseColor("#E8F0FF"))
         }
         bar.addView(title, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        wakeBtn = TextView(this).apply {
+            text = "WAKE OFF"
+            textSize = 13f
+            setTextColor(Color.parseColor("#2979FF"))
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+            setOnClickListener { toggleWake() }
+        }
+        bar.addView(wakeBtn)
         langBtn = TextView(this).apply {
             text = if (hindi) "HI" else "EN"
             textSize = 16f
             setTextColor(Color.parseColor("#2979FF"))
-            setPadding(dp(12), dp(8), dp(12), dp(8))
+            setPadding(dp(10), dp(8), dp(10), dp(8))
             setOnClickListener {
                 hindi = !hindi
                 prefs.edit().putBoolean("hindi", hindi).apply()
@@ -176,7 +289,7 @@ class MainActivity : Activity() {
             text = "\u2699"
             textSize = 26f
             setTextColor(Color.parseColor("#2979FF"))
-            setPadding(dp(12), dp(8), dp(12), dp(8))
+            setPadding(dp(10), dp(8), dp(10), dp(8))
             setOnClickListener { showSettings() }
         }
         bar.addView(gear)
@@ -244,11 +357,35 @@ class MainActivity : Activity() {
 
         tts = TextToSpeech(this) { s -> ttsReady = (s == TextToSpeech.SUCCESS) }
 
-        addBubble("assistant", "Namaste! Main KAIRO hoon. MIC dabake bolo ya likh ke poochho.")
+        wake = WakeWordEngine(
+            this,
+            onWake = { runOnUiThread { onWakeDetected() } },
+            onStatus = { m ->
+                runOnUiThread {
+                    note = m
+                    refreshUi()
+                }
+            }
+        )
+
+        addBubble("assistant", "Namaste! Main KAIRO hoon. MIC dabake bolo, likh ke poochho, ya WAKE ON karke 'Hey KAIRO' bolo.")
         if ((prefs.getString("token", "") ?: "").isBlank()) showSettings()
     }
 
+    override fun onResume() {
+        super.onResume()
+        resumed = true
+        updateWake()
+    }
+
+    override fun onPause() {
+        resumed = false
+        updateWake()
+        super.onPause()
+    }
+
     override fun onDestroy() {
+        wake?.stop()
         recognizer?.destroy()
         tts?.stop()
         tts?.shutdown()
@@ -281,6 +418,47 @@ class MainActivity : Activity() {
             }
         }
         sendBtn.isEnabled = !busy
+        updateWake()
+    }
+
+    // ---------- Wake word ----------
+
+    private fun toggleWake() {
+        if (!wakeOn) {
+            if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(arrayOf(android.Manifest.permission.RECORD_AUDIO), REQ_WAKE)
+                return
+            }
+            wakeOn = true
+            note = null
+        } else {
+            wakeOn = false
+            note = "Wake word band hai"
+        }
+        wakeBtn.text = if (wakeOn) "WAKE ON" else "WAKE OFF"
+        refreshUi()
+    }
+
+    private fun updateWake() {
+        val engine = wake ?: return
+        val desired = wakeOn && resumed && !listening && !speaking && !busy
+        if (desired && !engine.isActive) {
+            engine.start()
+        } else if (!desired && engine.isActive) {
+            engine.stop()
+        }
+    }
+
+    private fun onWakeDetected() {
+        if (!wakeOn || listening || busy) return
+        wake?.stop()
+        note = null
+        listenAfter = true
+        val greeting = if (hindi) "\u091C\u0940, \u092C\u094B\u0932\u093F\u090F" else "Yes, I'm listening"
+        if (!speak(greeting)) {
+            listenAfter = false
+            startListening()
+        }
     }
 
     // ---------- Voice: listening ----------
@@ -329,13 +507,23 @@ class MainActivity : Activity() {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
         if (requestCode == REQ_MIC) {
-            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+            if (granted) {
                 startListening()
             } else {
                 note = "Mic permission chahiye: Settings > Apps > KAIRO > Permissions mein allow karo"
                 refreshUi()
             }
+        } else if (requestCode == REQ_WAKE) {
+            if (granted) {
+                wakeOn = true
+                note = null
+                wakeBtn.text = "WAKE ON"
+            } else {
+                note = "Mic permission chahiye: Settings > Apps > KAIRO > Permissions mein allow karo"
+            }
+            refreshUi()
         }
     }
 
@@ -387,12 +575,12 @@ class MainActivity : Activity() {
 
     // ---------- Voice: speaking ----------
 
-    private fun speak(content: String) {
+    private fun speak(content: String): Boolean {
         val engine = tts
         if (engine == null || !ttsReady) {
             note = "Text-to-speech abhi ready nahi hai"
             refreshUi()
-            return
+            return false
         }
         val devanagari = content.any { it in '\u0900'..'\u097F' }
         val loc = Locale.forLanguageTag(if (devanagari) "hi-IN" else "en-IN")
@@ -400,7 +588,7 @@ class MainActivity : Activity() {
         if (res == TextToSpeech.LANG_MISSING_DATA || res == TextToSpeech.LANG_NOT_SUPPORTED) {
             note = "Is bhasha ki awaaz phone mein install nahi hai (Settings > Text-to-speech)"
             refreshUi()
-            return
+            return false
         }
         engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) {
@@ -413,157 +601,9 @@ class MainActivity : Activity() {
             override fun onDone(utteranceId: String?) {
                 runOnUiThread {
                     speaking = false
-                    refreshUi()
+                    afterSpeech()
                 }
             }
 
             override fun onError(utteranceId: String?) {
-                runOnUiThread {
-                    speaking = false
-                    refreshUi()
-                }
-            }
-        })
-        engine.speak(content, TextToSpeech.QUEUE_FLUSH, null, "kairo-utt")
-    }
-
-    private fun stopSpeaking() {
-        tts?.stop()
-        speaking = false
-    }
-
-    // ---------- Settings ----------
-
-    private fun showSettings() {
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(8), dp(20), 0)
-        }
-        val urlIn = EditText(this).apply {
-            hint = "Backend URL"
-            setText(prefs.getString("url", DEFAULT_URL))
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-            setSingleLine()
-        }
-        val tokIn = EditText(this).apply {
-            hint = "KAIRO_TOKEN (tumhara password)"
-            setText(prefs.getString("token", ""))
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-            setSingleLine()
-        }
-        box.addView(urlIn)
-        box.addView(tokIn)
-        AlertDialog.Builder(this)
-            .setTitle("Backend settings")
-            .setView(box)
-            .setPositiveButton("Save") { _, _ ->
-                prefs.edit()
-                    .putString("url", urlIn.text.toString().trim())
-                    .putString("token", tokIn.text.toString().trim())
-                    .apply()
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
-    }
-
-    // ---------- Chat ----------
-
-    private fun addBubble(role: String, content: String) {
-        val isUser = role == "user"
-        val tv = TextView(this).apply {
-            text = content
-            textSize = 16f
-            setTextColor(Color.parseColor("#E8F0FF"))
-            setPadding(dp(14), dp(10), dp(14), dp(10))
-            background = GradientDrawable().apply {
-                cornerRadius = dp(16).toFloat()
-                setColor(Color.parseColor(if (isUser) "#1E4FD8" else "#10204A"))
-            }
-        }
-        val lp = LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply {
-            gravity = if (isUser) Gravity.END else Gravity.START
-            topMargin = dp(6)
-            bottomMargin = dp(6)
-            if (isUser) marginStart = dp(48) else marginEnd = dp(48)
-        }
-        messages.addView(tv, lp)
-        scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
-    }
-
-    private fun sendMessage(fromVoice: Boolean) {
-        if (busy) return
-        val text = input.text.toString().trim()
-        if (text.isEmpty()) return
-        val token = (prefs.getString("token", "") ?: "").trim()
-        if (token.isBlank()) {
-            showSettings()
-            return
-        }
-        val base = (prefs.getString("url", DEFAULT_URL) ?: DEFAULT_URL).ifBlank { DEFAULT_URL }
-
-        stopSpeaking()
-        note = null
-        input.setText("")
-        history.add("user" to text)
-        addBubble("user", text)
-        busy = true
-        refreshUi()
-
-        val snapshot = history.toList()
-        thread {
-            val result = try {
-                callBackend(base, token, snapshot)
-            } catch (e: Exception) {
-                Pair(false, "Network error (" + e.javaClass.simpleName + "). Internet check karo aur dobara try karo.")
-            }
-            runOnUiThread {
-                if (result.first) {
-                    history.add("assistant" to result.second)
-                } else {
-                    history.removeAt(history.size - 1)
-                }
-                addBubble("assistant", result.second)
-                busy = false
-                refreshUi()
-                if (result.first && fromVoice) speak(result.second)
-            }
-        }
-    }
-
-    private fun callBackend(base: String, token: String, msgs: List<Pair<String, String>>): Pair<Boolean, String> {
-        val arr = JSONArray()
-        for (m in msgs) {
-            arr.put(JSONObject().put("role", m.first).put("text", m.second))
-        }
-        val body = JSONObject().put("messages", arr)
-
-        val conn = URL(base.trimEnd('/') + "/chat").openConnection() as HttpURLConnection
-        conn.requestMethod = "POST"
-        conn.connectTimeout = 30000
-        conn.readTimeout = 120000
-        conn.doOutput = true
-        conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
-        conn.setRequestProperty("x-kairo-token", token)
-        conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
-
-        val code = conn.responseCode
-        val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-        val raw = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
-
-        if (code == 200) {
-            return Pair(true, JSONObject(raw).getString("reply"))
-        }
-        if (code == 401) {
-            return Pair(false, "Token galat hai. Upar \u2699 dabake sahi KAIRO_TOKEN daalo.")
-        }
-        val detail = try {
-            JSONObject(raw).optString("detail", "")
-        } catch (e: Exception) {
-            ""
-        }
-        return Pair(false, "Server error " + code + ": " + detail.take(200))
-    }
-}
+                runOn
