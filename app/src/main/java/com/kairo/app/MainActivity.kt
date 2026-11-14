@@ -3,17 +3,11 @@ package com.kairo.app
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Bundle
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
-import android.speech.tts.TextToSpeech
-import android.speech.tts.UtteranceProgressListener
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
@@ -24,18 +18,14 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
-import java.util.Locale
-import kotlin.concurrent.thread
 
-class MainActivity : Activity() {
+class MainActivity : Activity(), KairoService.Ui {
 
     companion object {
         const val DEFAULT_URL = "https://kairo-backend-uyp9.onrender.com"
-        const val REQ_MIC = 1
-        const val REQ_WAKE = 2
+        const val REQ_PERM = 1
     }
 
-    private val history = mutableListOf<Pair<String, String>>()
     private lateinit var messages: LinearLayout
     private lateinit var scroll: ScrollView
     private lateinit var orb: OrbView
@@ -46,20 +36,9 @@ class MainActivity : Activity() {
     private lateinit var langBtn: TextView
     private lateinit var wakeBtn: TextView
 
-    private var busy = false
-    private var listening = false
-    private var speaking = false
-    private var note: String? = null
     private var hindi = true
-
-    private var wakeOn = false
-    private var resumed = false
-    private var listenAfter = false
-    private var wake: WakeWordEngine? = null
-
-    private var tts: TextToSpeech? = null
-    private var ttsReady = false
-    private var recognizer: SpeechRecognizer? = null
+    private var pendingAction: String? = null
+    private var pendingText: String? = null
 
     private val prefs by lazy { getSharedPreferences("kairo", Context.MODE_PRIVATE) }
 
@@ -176,7 +155,7 @@ class MainActivity : Activity() {
         row.addView(micBtn)
         sendBtn = Button(this).apply {
             text = "SEND"
-            setOnClickListener { sendMessage(false) }
+            setOnClickListener { sendTyped() }
         }
         row.addView(sendBtn)
         root.addView(
@@ -186,150 +165,87 @@ class MainActivity : Activity() {
 
         setContentView(root)
 
-        tts = TextToSpeech(this) { s -> ttsReady = (s == TextToSpeech.SUCCESS) }
-
-        wake = WakeWordEngine(
-            this,
-            onWake = { runOnUiThread { onWakeDetected() } },
-            onStatus = { m ->
-                runOnUiThread {
-                    note = m
-                    refreshUi()
-                }
-            }
-        )
-
-        addBubble("assistant", "Namaste! Main KAIRO hoon. MIC dabake bolo, likh ke poochho, ya WAKE ON karke 'Hey KAIRO' bolo.")
+        if (KairoService.bubbles.isEmpty()) {
+            KairoService.bubbles.add(
+                "assistant" to "Namaste! Main KAIRO hoon. MIC dabake bolo, likh ke poochho, ya WAKE ON karke 'Hey KAIRO' bolo."
+            )
+        }
         if ((prefs.getString("token", "") ?: "").isBlank()) showSettings()
     }
 
     override fun onResume() {
         super.onResume()
-        resumed = true
-        updateWake()
+        messages.removeAllViews()
+        for ((r, t) in KairoService.bubbles) addBubbleView(r, t)
+        KairoService.ui = this
+        refreshUi()
     }
 
     override fun onPause() {
-        resumed = false
-        updateWake()
+        if (KairoService.ui === this) KairoService.ui = null
         super.onPause()
     }
 
-    override fun onDestroy() {
-        wake?.stop()
-        recognizer?.destroy()
-        tts?.stop()
-        tts?.shutdown()
-        super.onDestroy()
+    // ---------- KairoService.Ui ----------
+
+    override fun onBubble(role: String, text: String) {
+        if (role == "user") input.setText("")
+        addBubbleView(role, text)
+    }
+
+    override fun onState() {
+        refreshUi()
+    }
+
+    override fun onPartial(text: String) {
+        input.setText(text)
     }
 
     // ---------- UI state ----------
 
     private fun refreshUi() {
         when {
-            listening -> {
+            KairoService.listening -> {
                 status.text = "Sun raha hoon... boliye"
                 orb.setSpeed(1100L)
                 micBtn.text = "STOP"
             }
-            busy -> {
+            KairoService.busy -> {
                 status.text = "KAIRO soch raha hai... (pehli baar 1 minute lag sakta hai)"
                 orb.setSpeed(600L)
                 micBtn.text = "MIC"
             }
-            speaking -> {
+            KairoService.speaking -> {
                 status.text = "KAIRO bol raha hai... (MIC dabake rok sakte ho)"
                 orb.setSpeed(900L)
                 micBtn.text = "MIC"
             }
             else -> {
-                status.text = note ?: "Ready"
+                val on = KairoService.running && KairoService.wakeOn
+                status.text = KairoService.note ?: (if (on) "Wake word ON: bolo 'Hey KAIRO'" else "Ready")
                 orb.setSpeed(2400L)
                 micBtn.text = "MIC"
             }
         }
-        sendBtn.isEnabled = !busy
-        updateWake()
+        sendBtn.isEnabled = !KairoService.busy
+        wakeBtn.text = if (KairoService.running && KairoService.wakeOn) "WAKE ON" else "WAKE OFF"
     }
 
-    // ---------- Wake word ----------
+    // ---------- Actions ----------
 
-    private fun toggleWake() {
-        if (!wakeOn) {
-            if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-                requestPermissions(arrayOf(android.Manifest.permission.RECORD_AUDIO), REQ_WAKE)
-                return
-            }
-            wakeOn = true
-            note = null
-        } else {
-            wakeOn = false
-            note = "Wake word band hai"
-        }
-        wakeBtn.text = if (wakeOn) "WAKE ON" else "WAKE OFF"
-        refreshUi()
-    }
+    private fun hasMic(): Boolean =
+        checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
 
-    private fun updateWake() {
-        val engine = wake ?: return
-        val desired = wakeOn && resumed && !listening && !speaking && !busy
-        if (desired && !engine.isActive) {
-            engine.start()
-        } else if (!desired && engine.isActive) {
-            engine.stop()
-        }
-    }
-
-    private fun onWakeDetected() {
-        if (!wakeOn || listening || busy) return
-        wake?.stop()
-        note = null
-        listenAfter = true
-        val greeting = if (hindi) "\u091C\u0940, \u092C\u094B\u0932\u093F\u090F" else "Yes, I'm listening"
-        if (!speak(greeting)) {
-            listenAfter = false
-            startListening()
-        }
-    }
-
-    // ---------- Voice: listening ----------
-
-    private fun onMicClicked() {
-        when {
-            listening -> recognizer?.stopListening()
-            busy -> {}
-            else -> {
-                stopSpeaking()
-                startListening()
-            }
-        }
-    }
-
-    private fun startListening() {
-        note = null
-        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
-            note = "Is phone mein speech recognition service nahi mili"
-            refreshUi()
+    private fun runWithPerms(action: String, text: String?) {
+        if (hasMic()) {
+            KairoService.send(this, action, text)
             return
         }
-        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(arrayOf(android.Manifest.permission.RECORD_AUDIO), REQ_MIC)
-            return
-        }
-        recognizer?.destroy()
-        val r = SpeechRecognizer.createSpeechRecognizer(this)
-        r.setRecognitionListener(listener)
-        recognizer = r
-
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, if (hindi) "hi-IN" else "en-IN")
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-        }
-        listening = true
-        input.setText("")
-        refreshUi()
-        r.startListening(intent)
+        pendingAction = action
+        pendingText = text
+        val perms = mutableListOf(android.Manifest.permission.RECORD_AUDIO)
+        if (Build.VERSION.SDK_INT >= 33) perms.add("android.permission.POST_NOTIFICATIONS")
+        requestPermissions(perms.toTypedArray(), REQ_PERM)
     }
 
     override fun onRequestPermissionsResult(
@@ -338,128 +254,43 @@ class MainActivity : Activity() {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
-        if (requestCode == REQ_MIC) {
-            if (granted) {
-                startListening()
-            } else {
-                note = "Mic permission chahiye: Settings > Apps > KAIRO > Permissions mein allow karo"
-                refreshUi()
-            }
-        } else if (requestCode == REQ_WAKE) {
-            if (granted) {
-                wakeOn = true
-                note = null
-                wakeBtn.text = "WAKE ON"
-            } else {
-                note = "Mic permission chahiye: Settings > Apps > KAIRO > Permissions mein allow karo"
-            }
-            refreshUi()
-        }
-    }
-
-    private val listener = object : RecognitionListener {
-        override fun onReadyForSpeech(params: Bundle?) {}
-        override fun onBeginningOfSpeech() {}
-        override fun onRmsChanged(rmsdB: Float) {}
-        override fun onBufferReceived(buffer: ByteArray?) {}
-        override fun onEndOfSpeech() {}
-        override fun onEvent(eventType: Int, params: Bundle?) {}
-
-        override fun onPartialResults(partialResults: Bundle?) {
-            val p = partialResults
-                ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                ?.firstOrNull()
-            if (!p.isNullOrBlank()) input.setText(p)
-        }
-
-        override fun onResults(results: Bundle?) {
-            listening = false
-            val said = results
-                ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                ?.firstOrNull()
-                ?.trim()
-                .orEmpty()
-            if (said.isEmpty()) {
-                note = "Kuch samajh nahi aaya, MIC dabake dobara bolo"
-                refreshUi()
-                return
-            }
-            input.setText(said)
-            sendMessage(true)
-        }
-
-        override fun onError(error: Int) {
-            listening = false
-            note = when (error) {
-                SpeechRecognizer.ERROR_NO_MATCH -> "Samajh nahi aaya, dobara bolo"
-                SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "Kuch suna nahi, MIC dabake dobara bolo"
-                SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT ->
-                    "Speech ke liye internet chahiye"
-                SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Mic permission allow karo"
-                SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Recognizer busy hai, thodi der baad try karo"
-                else -> "Speech error code $error"
-            }
-            refreshUi()
-        }
-    }
-
-    // ---------- Voice: speaking ----------
-
-    private fun speak(content: String): Boolean {
-        val engine = tts
-        if (engine == null || !ttsReady) {
-            note = "Text-to-speech abhi ready nahi hai"
-            refreshUi()
-            return false
-        }
-        val devanagari = content.any { it in '\u0900'..'\u097F' }
-        val loc = Locale.forLanguageTag(if (devanagari) "hi-IN" else "en-IN")
-        val res = engine.setLanguage(loc)
-        if (res == TextToSpeech.LANG_MISSING_DATA || res == TextToSpeech.LANG_NOT_SUPPORTED) {
-            note = "Is bhasha ki awaaz phone mein install nahi hai (Settings > Text-to-speech)"
-            refreshUi()
-            return false
-        }
-        engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(utteranceId: String?) {
-                runOnUiThread {
-                    speaking = true
-                    refreshUi()
-                }
-            }
-
-            override fun onDone(utteranceId: String?) {
-                runOnUiThread {
-                    speaking = false
-                    afterSpeech()
-                }
-            }
-
-            override fun onError(utteranceId: String?) {
-                runOnUiThread {
-                    speaking = false
-                    afterSpeech()
-                }
-            }
-        })
-        engine.speak(content, TextToSpeech.QUEUE_FLUSH, null, "kairo-utt")
-        return true
-    }
-
-    private fun afterSpeech() {
-        if (listenAfter) {
-            listenAfter = false
-            startListening()
+        if (requestCode != REQ_PERM) return
+        val action = pendingAction
+        val text = pendingText
+        pendingAction = null
+        pendingText = null
+        if (hasMic()) {
+            if (action != null) KairoService.send(this, action, text)
         } else {
+            KairoService.note = "Mic permission chahiye: Settings > Apps > KAIRO > Permissions mein allow karo"
             refreshUi()
         }
     }
 
-    private fun stopSpeaking() {
-        tts?.stop()
-        speaking = false
-        listenAfter = false
+    private fun toggleWake() {
+        if (KairoService.running && KairoService.wakeOn) {
+            KairoService.send(this, KairoService.ACTION_WAKE_OFF)
+        } else {
+            runWithPerms(KairoService.ACTION_WAKE_ON, null)
+        }
+    }
+
+    private fun onMicClicked() {
+        if (KairoService.busy) return
+        runWithPerms(KairoService.ACTION_MIC, null)
+    }
+
+    private fun sendTyped() {
+        if (KairoService.busy) return
+        val text = input.text.toString().trim()
+        if (text.isEmpty()) return
+        val token = (prefs.getString("token", "") ?: "").trim()
+        if (token.isBlank()) {
+            showSettings()
+            return
+        }
+        input.setText("")
+        runWithPerms(KairoService.ACTION_SEND, text)
     }
 
     // ---------- Settings ----------
@@ -496,9 +327,9 @@ class MainActivity : Activity() {
             .show()
     }
 
-    // ---------- Chat ----------
+    // ---------- Chat bubbles ----------
 
-    private fun addBubble(role: String, content: String) {
+    private fun addBubbleView(role: String, content: String) {
         val isUser = role == "user"
         val tv = TextView(this).apply {
             text = content
@@ -521,45 +352,5 @@ class MainActivity : Activity() {
         }
         messages.addView(tv, lp)
         scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
-    }
-
-    private fun sendMessage(fromVoice: Boolean) {
-        if (busy) return
-        val text = input.text.toString().trim()
-        if (text.isEmpty()) return
-        val token = (prefs.getString("token", "") ?: "").trim()
-        if (token.isBlank()) {
-            showSettings()
-            return
-        }
-        val base = (prefs.getString("url", DEFAULT_URL) ?: DEFAULT_URL).ifBlank { DEFAULT_URL }
-
-        stopSpeaking()
-        note = null
-        input.setText("")
-        history.add("user" to text)
-        addBubble("user", text)
-        busy = true
-        refreshUi()
-
-        val snapshot = history.toList()
-        thread {
-            val result = try {
-                BackendClient.chat(base, token, snapshot)
-            } catch (e: Exception) {
-                Pair(false, "Network error (" + e.javaClass.simpleName + "). Internet check karo aur dobara try karo.")
-            }
-            runOnUiThread {
-                if (result.first) {
-                    history.add("assistant" to result.second)
-                } else {
-                    history.removeAt(history.size - 1)
-                }
-                addBubble("assistant", result.second)
-                busy = false
-                refreshUi()
-                if (result.first && fromVoice) speak(result.second)
-            }
-        }
     }
 }
