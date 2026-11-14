@@ -1,16 +1,11 @@
 package com.kairo.app
 
-import android.animation.ValueAnimator
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.Paint
-import android.graphics.RadialGradient
-import android.graphics.Shader
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Bundle
@@ -24,177 +19,13 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
-import android.view.animation.LinearInterpolator
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
-import org.json.JSONArray
-import org.json.JSONObject
-import org.vosk.Model
-import org.vosk.Recognizer
-import org.vosk.android.SpeechService
-import org.vosk.android.StorageService
-import java.net.HttpURLConnection
-import java.net.URL
 import java.util.Locale
 import kotlin.concurrent.thread
-
-class OrbView(context: Context) : View(context) {
-    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private var pulse = 0f
-
-    private val animator = ValueAnimator.ofFloat(0f, 1f).apply {
-        duration = 2400
-        repeatCount = ValueAnimator.INFINITE
-        repeatMode = ValueAnimator.REVERSE
-        interpolator = LinearInterpolator()
-        addUpdateListener {
-            pulse = it.animatedValue as Float
-            invalidate()
-        }
-    }
-
-    fun setSpeed(ms: Long) {
-        animator.duration = ms
-    }
-
-    override fun onAttachedToWindow() {
-        super.onAttachedToWindow()
-        animator.start()
-    }
-
-    override fun onDetachedFromWindow() {
-        animator.cancel()
-        super.onDetachedFromWindow()
-    }
-
-    override fun onDraw(canvas: Canvas) {
-        val cx = width / 2f
-        val cy = height / 2f
-        val r = minOf(width, height) * 0.22f * (1f + 0.08f * pulse)
-
-        paint.shader = RadialGradient(
-            cx, cy, r * 2f,
-            intArrayOf(
-                Color.parseColor("#CC2979FF"),
-                Color.parseColor("#442979FF"),
-                Color.parseColor("#00000000")
-            ),
-            floatArrayOf(0f, 0.5f, 1f),
-            Shader.TileMode.CLAMP
-        )
-        canvas.drawCircle(cx, cy, r * 2f, paint)
-
-        paint.shader = RadialGradient(
-            cx, cy, r,
-            intArrayOf(
-                Color.parseColor("#FFBFD9FF"),
-                Color.parseColor("#FF2979FF"),
-                Color.parseColor("#FF0A1A4A")
-            ),
-            floatArrayOf(0f, 0.55f, 1f),
-            Shader.TileMode.CLAMP
-        )
-        canvas.drawCircle(cx, cy, r, paint)
-        paint.shader = null
-    }
-}
-
-/** Offline wake word listener ("Hey Cairo" sounds like "Hey KAIRO"), built on Vosk. */
-class WakeWordEngine(
-    private val context: Context,
-    private val onWake: () -> Unit,
-    private val onStatus: (String) -> Unit
-) : org.vosk.android.RecognitionListener {
-
-    private var model: Model? = null
-    private var service: SpeechService? = null
-    private var loading = false
-    private var wantRunning = false
-
-    @Volatile
-    private var triggered = false
-
-    val isActive: Boolean
-        get() = wantRunning
-
-    fun start() {
-        wantRunning = true
-        triggered = false
-        val m = model
-        if (m != null) {
-            begin(m)
-            return
-        }
-        if (loading) return
-        loading = true
-        onStatus("Wake word model load ho raha hai (pehli baar 30-60 second lag sakte hain)...")
-        StorageService.unpack(
-            context, "model-en-us", "model",
-            StorageService.Callback<Model> { loaded ->
-                loading = false
-                model = loaded
-                if (wantRunning) begin(loaded)
-            },
-            StorageService.Callback<java.io.IOException> { e ->
-                loading = false
-                wantRunning = false
-                onStatus("Wake model error: " + e.message)
-            }
-        )
-    }
-
-    private fun begin(m: Model) {
-        try {
-            service?.shutdown()
-            val rec = Recognizer(m, 16000.0f, "[\"hey cairo\", \"[unk]\"]")
-            val s = SpeechService(rec, 16000.0f)
-            service = s
-            s.startListening(this)
-            onStatus("Wake word ON: bolo 'Hey KAIRO' (Hey Cairo)")
-        } catch (e: Exception) {
-            wantRunning = false
-            onStatus("Wake word start nahi hua: " + e.message)
-        }
-    }
-
-    fun stop() {
-        wantRunning = false
-        try {
-            service?.stop()
-            service?.shutdown()
-        } catch (e: Exception) {
-            // ignore
-        }
-        service = null
-    }
-
-    private fun check(h: String?) {
-        if (h == null || triggered) return
-        if (h.contains("cairo", ignoreCase = true)) {
-            triggered = true
-            onWake()
-        }
-    }
-
-    override fun onPartialResult(hypothesis: String?) {
-        check(hypothesis)
-    }
-
-    override fun onResult(hypothesis: String?) {
-        check(hypothesis)
-    }
-
-    override fun onFinalResult(hypothesis: String?) {}
-
-    override fun onError(exception: Exception?) {
-        onStatus("Wake word error: " + exception?.message)
-    }
-
-    override fun onTimeout() {}
-}
 
 class MainActivity : Activity() {
 
@@ -606,4 +437,129 @@ class MainActivity : Activity() {
             }
 
             override fun onError(utteranceId: String?) {
-                runOn
+                runOnUiThread {
+                    speaking = false
+                    afterSpeech()
+                }
+            }
+        })
+        engine.speak(content, TextToSpeech.QUEUE_FLUSH, null, "kairo-utt")
+        return true
+    }
+
+    private fun afterSpeech() {
+        if (listenAfter) {
+            listenAfter = false
+            startListening()
+        } else {
+            refreshUi()
+        }
+    }
+
+    private fun stopSpeaking() {
+        tts?.stop()
+        speaking = false
+        listenAfter = false
+    }
+
+    // ---------- Settings ----------
+
+    private fun showSettings() {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), 0)
+        }
+        val urlIn = EditText(this).apply {
+            hint = "Backend URL"
+            setText(prefs.getString("url", DEFAULT_URL))
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            setSingleLine()
+        }
+        val tokIn = EditText(this).apply {
+            hint = "KAIRO_TOKEN (tumhara password)"
+            setText(prefs.getString("token", ""))
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            setSingleLine()
+        }
+        box.addView(urlIn)
+        box.addView(tokIn)
+        AlertDialog.Builder(this)
+            .setTitle("Backend settings")
+            .setView(box)
+            .setPositiveButton("Save") { _, _ ->
+                prefs.edit()
+                    .putString("url", urlIn.text.toString().trim())
+                    .putString("token", tokIn.text.toString().trim())
+                    .apply()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    // ---------- Chat ----------
+
+    private fun addBubble(role: String, content: String) {
+        val isUser = role == "user"
+        val tv = TextView(this).apply {
+            text = content
+            textSize = 16f
+            setTextColor(Color.parseColor("#E8F0FF"))
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(16).toFloat()
+                setColor(Color.parseColor(if (isUser) "#1E4FD8" else "#10204A"))
+            }
+        }
+        val lp = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply {
+            gravity = if (isUser) Gravity.END else Gravity.START
+            topMargin = dp(6)
+            bottomMargin = dp(6)
+            if (isUser) marginStart = dp(48) else marginEnd = dp(48)
+        }
+        messages.addView(tv, lp)
+        scroll.post { scroll.fullScroll(View.FOCUS_DOWN) }
+    }
+
+    private fun sendMessage(fromVoice: Boolean) {
+        if (busy) return
+        val text = input.text.toString().trim()
+        if (text.isEmpty()) return
+        val token = (prefs.getString("token", "") ?: "").trim()
+        if (token.isBlank()) {
+            showSettings()
+            return
+        }
+        val base = (prefs.getString("url", DEFAULT_URL) ?: DEFAULT_URL).ifBlank { DEFAULT_URL }
+
+        stopSpeaking()
+        note = null
+        input.setText("")
+        history.add("user" to text)
+        addBubble("user", text)
+        busy = true
+        refreshUi()
+
+        val snapshot = history.toList()
+        thread {
+            val result = try {
+                BackendClient.chat(base, token, snapshot)
+            } catch (e: Exception) {
+                Pair(false, "Network error (" + e.javaClass.simpleName + "). Internet check karo aur dobara try karo.")
+            }
+            runOnUiThread {
+                if (result.first) {
+                    history.add("assistant" to result.second)
+                } else {
+                    history.removeAt(history.size - 1)
+                }
+                addBubble("assistant", result.second)
+                busy = false
+                refreshUi()
+                if (result.first && fromVoice) speak(result.second)
+            }
+        }
+    }
+}
