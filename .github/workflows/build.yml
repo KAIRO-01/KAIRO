@@ -2,6 +2,8 @@ name: Build KAIRO APK
 
 on:
   push:
+    branches: [main, "feature/**", "fix/**"]
+  pull_request:
     branches: [main]
   workflow_dispatch:
 
@@ -52,7 +54,7 @@ jobs:
           exit $code
 
       - name: Publish error summary
-        if: failure()
+        if: failure() && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -62,7 +64,16 @@ jobs:
             --notes-file error-summary.txt \
             --prerelease
 
+      - name: Upload APK for branch and PR testing
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: KAIRO-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 7
+
       - name: Publish APK as a release
+        if: success() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
