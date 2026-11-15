@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="kairo_accessibility_description">Optional KAIRO WhatsApp screen assistant. Reads visible WhatsApp text or taps an explicitly named chat only when you ask. Disable at any time.</string>
+</resources>
