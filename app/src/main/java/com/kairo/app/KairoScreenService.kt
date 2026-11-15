@@ -4,6 +4,7 @@ import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
 import java.util.ArrayDeque
 import java.util.Locale
 
@@ -30,7 +31,8 @@ class KairoScreenService : AccessibilityService() {
         super.onServiceConnected()
         active = this
         serviceInfo = serviceInfo.apply {
-            flags = flags or AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
+            flags = flags or AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
+                AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
             packageNames = arrayOf("com.whatsapp", "com.whatsapp.w4b")
         }
     }
@@ -44,11 +46,24 @@ class KairoScreenService : AccessibilityService() {
     }
 
     /**
+     * Re-query Android's current active application window on every request.
+     * Never keep an old WhatsApp chat root or use a background chat window.
+     * Some devices expose an empty window list; fall back to the current active root.
+     */
+    private fun currentVisibleWhatsAppRoot(): AccessibilityNodeInfo? {
+        val appWindows = windows.filter { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }
+        val activeApp = appWindows.firstOrNull { it.isActive }
+            ?: appWindows.firstOrNull { it.isFocused }
+        val root = if (activeApp != null) activeApp.root else rootInActiveWindow
+        return root?.takeIf { it.packageName?.toString() in allowedApps }
+    }
+
+    /**
      * Extract accessible, user-visible text only after a spoken request.
      * Accessibility cannot read image pixels, older off-screen messages or encrypted backups.
      */
     fun readVisibleWhatsApp(): String? {
-        val root = rootInActiveWindow ?: return null
+        val root = currentVisibleWhatsAppRoot() ?: return null
         if (root.packageName?.toString() !in allowedApps) return null
         val seen = LinkedHashSet<String>()
         val queue: ArrayDeque<AccessibilityNodeInfo> = ArrayDeque()
@@ -78,7 +93,7 @@ class KairoScreenService : AccessibilityService() {
         if (label.length !in 2..72 || blockedLabels.any { label == it || label.startsWith("$it ") }) {
             return false
         }
-        val root = rootInActiveWindow ?: return false
+        val root = currentVisibleWhatsAppRoot() ?: return false
         if (root.packageName?.toString() !in allowedApps) return false
         val queue: ArrayDeque<AccessibilityNodeInfo> = ArrayDeque()
         queue.add(root)
