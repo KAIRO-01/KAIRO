@@ -46,6 +46,7 @@ object PhoneActions {
         val t = raw.lowercase(Locale.ROOT).trim()
         if (t.isEmpty()) return null
 
+        bluetoothControl(ctx, t, appVisible)?.let { return it }
         volume(ctx, t)?.let { return it }
 
         val timerWord = has(t, "timer", "\u091F\u093E\u0907\u092E\u0930")
@@ -114,6 +115,22 @@ object PhoneActions {
         }
 
         return null
+    }
+
+    /**
+     * Android 16 blocks direct Bluetooth enable/disable by ordinary apps.
+     * Open the OS settings so the user controls the switch.
+     */
+    private fun bluetoothControl(ctx: Context, t: String, appVisible: Boolean): String? {
+        val mentionsBluetooth = has(t, "bluetooth", "blue tooth", "ब्लूटूथ")
+        if (!mentionsBluetooth) return null
+        val command = Regex("\\b(turn|on|off|enable|disable|switch|open|activate|deactivate)\\b")
+            .containsMatchIn(t) || has(t, "chalu", "band", "kholo", "khol", "चालू", "बंद", "खोलो")
+        if (!command) return null
+        if (blocked(ctx, appVisible)) return NEED_OVERLAY
+        return if (launch(ctx, Intent(Settings.ACTION_BLUETOOTH_SETTINGS))) {
+            "Bluetooth settings khol di. Android 16 mein switch aapko manually change karna hoga."
+        } else "Bluetooth settings nahi khul paayi."
     }
 
     // ---------- helpers ----------
