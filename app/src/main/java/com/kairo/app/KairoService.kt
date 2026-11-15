@@ -76,52 +76,25 @@ class KairoService : Service() {
     private var shownSession = false
     private var listenAfter = false
     private var engineBroken = false
-    private var pendingStop = false
     private var speakStart = 0L
     private var lastActivity = 0L
     private var uttCounter = 0
     private var curUtt = ""
 
-    private val stopWords = listOf("stop", "cancel", "enough", "quiet")
-    private val heyRegex = Regex("\\b(?:(?:hey|hi|okay|ok)\\s+)?(?:cairo|kairo|kyro)\\b")
+    // Accept only exact intentional stop phrases. Never infer a stop from
+    // unrelated conversations such as "stop by the shop".
+    private val strictStopCommands = setOf(
+        "stop", "stop kairo", "kairo stop", "stop cairo", "cairo stop",
+        "स्टॉप", "कायरो स्टॉप", "स्टॉप कायरो"
+    )
 
     private val forgetWords = listOf(
         "bhool jao", "bhul jao", "forget everything", "clear memory", "clear chat",
         "\u092D\u0942\u0932 \u091C\u093E\u0913"
     )
 
-    // "Stop KAIRO" jaisa kuch: stop-jaisa shabd + KAIRO-jaisa shabd
-    private val stopish = listOf(
-        "stop", "sleep", "band karo", "bas karo", "so jao",
-        "\u0938\u094D\u091F\u0949\u092A", "\u0938\u094D\u091F\u093E\u092A",
-        "\u092C\u0902\u0926", "\u092C\u0938", "\u0938\u094B \u091C\u093E\u0913"
-    )
-    private val kairoish = listOf(
-        "cairo", "kairo", "kyro", "cyro", "kayro",
-        "\u0915\u093E\u092F\u0930\u094B", "\u0915\u0948\u0930\u094B", "\u0915\u094D\u0930\u093E\u092F\u094B",
-        "\u0915\u0930\u093E\u092F\u094B", "\u0915\u093E\u0907\u0930\u094B", "\u0915\u0947\u0930\u094B",
-        "\u0915\u094D\u092F\u093E\u0930\u094B"
-    )
-    private val bareStops = listOf(
-        "stop", "bas", "ruko", "bas karo",
-        "\u0938\u094D\u091F\u0949\u092A", "\u092C\u0938", "\u0930\u0941\u0915\u094B"
-    )
-
     private val restartRunnable = Runnable {
         if (running && session && !listening && !busy && !speaking) startListening()
-    }
-
-    private val stopRunnable = Runnable {
-        pendingStop = false
-        if (running) {
-            wake?.stop()
-            if (session) {
-                startListening()
-            } else {
-                note = "Ruk gaya."
-                refresh()
-            }
-        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -348,8 +321,6 @@ class KairoService : Service() {
 
     private fun goSleep(message: String?, ack: String?) {
         handler.removeCallbacks(restartRunnable)
-        handler.removeCallbacks(stopRunnable)
-        pendingStop = false
         session = false
         listenAfter = false
         recognizer?.destroy()
@@ -362,40 +333,34 @@ class KairoService : Service() {
         refresh()
     }
 
-    private fun onHeard(t: String) {
-        if (!running) return
-        val kairo = t.contains("cairo") || t.contains("kairo") || t.contains("kyro")
-        val stop = stopWords.any { t.contains(it) }
+    private fun onHeard(command: String) {
+        if (!running || busy || listening) return
 
-        if (pendingStop) {
-            if (kairo) {
-                handler.removeCallbacks(stopRunnable)
-                pendingStop = false
-                goSleep("Mic band. 'Hey KAIRO' bolo jab chahiye.", okAck())
+        // WakeWordEngine sends only verified, final, exact "wake" or "stop" events.
+        // Any background conversation and partial transcript is ignored.
+        when (command) {
+            "stop" -> {
+                // "Stop" is a hard stop for KAIRO's spoken response only.
+                // Never speak an acknowledgement after a stop.
+                if (speaking && SystemClock.uptimeMillis() - speakStart >= 450L) {
+                    stopSpeaking()
+                    session = false
+                    note = null
+                    refresh()
+                }
             }
-            return
-        }
-
-        if (speaking) {
-            if (SystemClock.uptimeMillis() - speakStart < 900) return
-            if (stop && kairo) {
-                goSleep("Mic band. 'Hey KAIRO' bolo jab chahiye.", okAck())
-            } else if (stop) {
-                // pehle bolna rok do, thodi der dekho ki "kairo" bhi aata hai ya nahi
-                pendingStop = true
-                stopSpeaking()
-                handler.postDelayed(stopRunnable, 900)
-            } else if (heyRegex.containsMatchIn(t)) {
-                wake?.stop()
-                stopSpeaking()
-                session = true
-                lastActivity = SystemClock.uptimeMillis()
-                startListening()
+            "wake", "bare_wake" -> {
+                if (!wakeOn) return
+                // A bare "KAIRO" heard from the phone speaker is not a safe barge-in.
+                if (speaking && command == "bare_wake") return
+                if (speaking) {
+                    // A clear "Hey KAIRO" interrupts a long response deliberately.
+                    if (SystemClock.uptimeMillis() - speakStart < 450L) return
+                    stopSpeaking()
+                }
+                onWakeDetected()
             }
-            return
         }
-
-        if (kairo && !stop) onWakeDetected()
     }
 
     private fun onWakeDetected() {
@@ -445,6 +410,12 @@ class KairoService : Service() {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, if (isHindi()) "hi-IN" else "en-IN")
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+            // Give the person a chance to pause during a longer command.
+            // Android speech providers may override these tuning hints.
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 2100L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1700L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 1300L)
         }
         listening = true
         refresh()
@@ -452,14 +423,10 @@ class KairoService : Service() {
     }
 
     private fun isSleepCommand(s: String): Boolean {
-        val t = s.lowercase(Locale.ROOT).trim()
-        if (t.split(" ").size > 4) return false
-        return stopish.any { t.contains(it) } && kairoish.any { t.contains(it) }
-    }
-
-    private fun isBareStop(s: String): Boolean {
-        val t = s.lowercase(Locale.ROOT).trim()
-        return t in bareStops
+        val normalized = s.lowercase(Locale.ROOT)
+            .replace(Regex("[,.!?]+"), " ")
+            .trim().replace(Regex("\\s+"), " ")
+        return normalized in strictStopCommands
     }
 
     private fun stripWake(s: String): String {
@@ -503,22 +470,14 @@ class KairoService : Service() {
                 ?.trim()
                 .orEmpty()
             if (said.isEmpty()) {
-                if (session) {
-                    restartListening(300)
-                } else {
-                    note = "Kuch samajh nahi aaya, dobara bolo"
-                    refresh()
-                }
+                // Strict mode: an empty listen never becomes an ambient listening loop.
+                if (session) goSleep("Kuch suna nahi. Dobara 'Hey KAIRO' bolo.", null)
+                else refresh()
                 return
             }
             lastActivity = SystemClock.uptimeMillis()
             if (isSleepCommand(said)) {
-                addBubble("user", said)
-                goSleep("Mic band. 'Hey KAIRO' bolo jab chahiye.", okAck())
-                return
-            }
-            if (isBareStop(said)) {
-                if (session) restartListening(300) else refresh()
+                goSleep("Ruk gaya. Dobara 'Hey KAIRO' bolo.", null)
                 return
             }
             sendMessage(stripWake(said), true)
@@ -527,19 +486,15 @@ class KairoService : Service() {
         override fun onError(error: Int) {
             listening = false
             if (session) {
-                when (error) {
-                    SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> {
-                        val idle = SystemClock.uptimeMillis() - lastActivity
-                        if (IDLE_TIMEOUT_MS > 0 && idle > IDLE_TIMEOUT_MS) {
-                            goSleep("Kaafi der se kuch suna nahi, so gaya. 'Hey KAIRO' bolo.", null)
-                        } else {
-                            restartListening(400)
-                        }
-                    }
-                    SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> restartListening(1200)
-                    SpeechRecognizer.ERROR_CLIENT -> {}
-                    else -> goSleep(errText(error) + " (session band)", null)
+                // No repeated background listening after noise, silence or errors.
+                // Every new user command requires an intentional wake word.
+                val message = when (error) {
+                    SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT ->
+                        "Command nahi suna. Dobara 'Hey KAIRO' bolo."
+                    SpeechRecognizer.ERROR_CLIENT -> null
+                    else -> errText(error)
                 }
+                goSleep(message, null)
                 return
             }
             if (error != SpeechRecognizer.ERROR_CLIENT) note = errText(error)
@@ -618,18 +573,11 @@ class KairoService : Service() {
     // ---------- Chat ----------
 
     private fun afterReply(reply: String, speakIt: Boolean) {
-        var spoke = false
-        if (speakIt) {
-            listenAfter = session
-            spoke = speak(reply)
-        }
-        if (!spoke) {
-            listenAfter = false
-            if (session && !listening) {
-                startListening()
-                return
-            }
-        }
+        // Strict single-turn mode: KAIRO speaks the reply, then only the wake
+        // engine remains active. Nearby conversation cannot become a new command.
+        session = false
+        listenAfter = false
+        if (speakIt) speak(reply)
         refresh()
     }
 
