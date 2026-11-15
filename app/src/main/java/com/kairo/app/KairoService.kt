@@ -681,19 +681,21 @@ class KairoService : Service() {
 
         stopSpeaking()
         note = null
-        history.add("user" to text)
-        trimHistory()
-        saveHistory()
+        // WhatsApp screen/notification text and its answers are deliberately ephemeral.
+        // Never reuse another person's chat summary as AI context.
+        if (screenRequest?.first != true) {
+            history.add("user" to text)
+            trimHistory()
+            saveHistory()
+        }
         addBubble("user", text)
         busy = true
         refresh()
 
-        val snapshot = history.toMutableList()
-        if (screenRequest?.first == true && snapshot.isNotEmpty()) {
-            snapshot.removeAt(snapshot.lastIndex)
-            // Only this user-requested AI call includes visible chat / notification text.
-            // It is deliberately not written to the device conversation history.
-            snapshot.add("user" to screenRequest.second)
+        val snapshot = if (screenRequest?.first == true) {
+            mutableListOf("user" to screenRequest.second)
+        } else {
+            history.toMutableList()
         }
         if (PhoneState.wanted(text) && snapshot.isNotEmpty()) {
             val last = snapshot.removeAt(snapshot.size - 1)
@@ -708,13 +710,31 @@ class KairoService : Service() {
             }
             handler.post {
                 if (!running) return@post
-                if (result.first) {
-                    history.add("assistant" to result.second)
-                    trimHistory()
-                } else if (history.isNotEmpty()) {
-                    history.removeAt(history.size - 1)
+
+                // If the user switched WhatsApp chats while Gemini was answering,
+                // discard the older chat's reply instead of speaking it over the new chat.
+                if (screenRequest?.first == true &&
+                    screenRequest.second.startsWith("Summarize this currently visible WhatsApp")
+                ) {
+                    val currentScreen = KairoScreenActions.summaryPrompt(text)
+                    if (currentScreen?.first != true || currentScreen.second != screenRequest.second) {
+                        busy = false
+                        val changed = "WhatsApp chat ya screen badal gayi hai. Nayi chat ki summary dobara poochho."
+                        addBubble("assistant", changed)
+                        afterReply(changed, fromVoice)
+                        return@post
+                    }
                 }
-                saveHistory()
+
+                if (screenRequest?.first != true) {
+                    if (result.first) {
+                        history.add("assistant" to result.second)
+                        trimHistory()
+                    } else if (history.isNotEmpty()) {
+                        history.removeAt(history.size - 1)
+                    }
+                    saveHistory()
+                }
                 addBubble("assistant", result.second)
                 busy = false
                 afterReply(result.second, result.first && fromVoice)
