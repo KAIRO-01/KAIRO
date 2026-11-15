@@ -123,7 +123,7 @@ class WakeWordEngine(
         val now = SystemClock.uptimeMillis()
         if (now - lastAcceptedMs < 1400L) return
         lastAcceptedMs = now
-        onHeard(if (phrase in stopPhrases) "stop" else "wake")
+        onHeard(if (phrase in stopPhrases) "stop" else if (phrase.contains(" ")) "wake" else "bare_wake")
     }
 
     // Partial Vosk results are NOT reliable enough for safety-critical stop/wake.
