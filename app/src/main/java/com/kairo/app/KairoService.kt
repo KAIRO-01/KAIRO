@@ -83,7 +83,7 @@ class KairoService : Service() {
     private var curUtt = ""
 
     private val stopWords = listOf("stop", "cancel", "enough", "quiet")
-    private val heyRegex = Regex("\\b(hey|hi|okay|ok) cairo")
+    private val heyRegex = Regex("\\b(?:(?:hey|hi|okay|ok)\\s+)?(?:cairo|kairo|kyro)\\b")
 
     private val forgetWords = listOf(
         "bhool jao", "bhul jao", "forget everything", "clear memory", "clear chat",
