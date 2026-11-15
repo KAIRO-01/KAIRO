@@ -10,7 +10,8 @@ object KairoScreenActions {
     private fun wantsSummary(t: String): Boolean = listOf(
         "summar", "summary", "read this", "read my", "what does", "what is on",
         "screen pe", "screen par", "स्क्रीन पर", "समरी", "सारांश",
-        "पढ़ो", "पढ़कर", "बताओ", "kya likha"
+        "पढ़ो", "पढ़कर", "बताओ", "kya likha", "kya bola", "kya kaha",
+        "isme kya", "इसमें क्या", "क्या बोला", "क्या कहा", "क्या लिखा", "इसका मतलब"
     ).any { t.contains(it) }
 
     private fun isWhatsApp(t: String): Boolean =
@@ -36,7 +37,8 @@ object KairoScreenActions {
         }
 
         if (isWhatsApp(t) || t.contains("screen") || t.contains("स्क्रीन") ||
-            t.contains("chat") || t.contains("message") || t.contains("मैसेज")) {
+            t.contains("chat") || t.contains("message") || t.contains("मैसेज") ||
+            t.contains("इसमें") || t.contains("isme") || t.contains("इसका मतलब")) {
             val service = KairoScreenService.active
                 ?: return false to "Screen Access off hai. KAIRO settings se Accessibility permission enable karo."
             val screen = service.readVisibleWhatsApp()
