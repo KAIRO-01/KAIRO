@@ -3,6 +3,8 @@ package com.kairo.app
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
+import android.content.Intent
+import android.provider.Settings
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
@@ -206,7 +208,7 @@ class MainActivity : Activity(), KairoService.Ui {
     private fun refreshUi() {
         when {
             KairoService.listening -> {
-                status.text = "Sun raha hoon... boliye"
+                status.text = "Listening..."
                 orb.setSpeed(1100L)
                 micBtn.text = "STOP"
             }
@@ -284,11 +286,7 @@ class MainActivity : Activity(), KairoService.Ui {
         if (KairoService.busy) return
         val text = input.text.toString().trim()
         if (text.isEmpty()) return
-        val token = (prefs.getString("token", "") ?: "").trim()
-        if (token.isBlank()) {
-            showSettings()
-            return
-        }
+        // Local commands work even when an AI backend token has not been configured.
         input.setText("")
         runWithPerms(KairoService.ACTION_SEND, text)
     }
@@ -314,6 +312,20 @@ class MainActivity : Activity(), KairoService.Ui {
         }
         box.addView(urlIn)
         box.addView(tokIn)
+        val screenAccess = Button(this).apply {
+            text = "Enable WhatsApp Screen Access"
+            setOnClickListener {
+                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            }
+        }
+        val notificationAccess = Button(this).apply {
+            text = "Enable WhatsApp Notification Access"
+            setOnClickListener {
+                startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+            }
+        }
+        box.addView(screenAccess)
+        box.addView(notificationAccess)
         AlertDialog.Builder(this)
             .setTitle("Backend settings")
             .setView(box)
