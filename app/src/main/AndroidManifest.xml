@@ -31,6 +31,8 @@
 
     <application
         android:allowBackup="false"
+        android:icon="@drawable/kairo_app_icon"
+        android:roundIcon="@drawable/kairo_app_icon"
         android:label="KAIRO"
         android:theme="@android:style/Theme.Material.NoActionBar">
 
