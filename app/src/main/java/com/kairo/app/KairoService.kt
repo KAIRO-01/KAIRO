@@ -364,7 +364,7 @@ class KairoService : Service() {
 
     private fun onHeard(t: String) {
         if (!running) return
-        val kairo = t.contains("cairo")
+        val kairo = t.contains("cairo") || t.contains("kairo") || t.contains("kyro")
         val stop = stopWords.any { t.contains(it) }
 
         if (pendingStop) {
@@ -404,14 +404,9 @@ class KairoService : Service() {
         note = null
         session = true
         lastActivity = SystemClock.uptimeMillis()
-        listenAfter = true
-        val greeting = if (isHindi()) "\u091C\u0940, \u092C\u094B\u0932\u093F\u090F" else "Yes, I'm listening"
-        if (!speak(greeting)) {
-            listenAfter = false
-            startListening()
-        } else {
-            refresh()
-        }
+        // Silent wake: show listening state, without repeating a spoken acknowledgement.
+        listenAfter = false
+        startListening()
     }
 
     // ---------- Listening ----------
@@ -469,7 +464,7 @@ class KairoService : Service() {
 
     private fun stripWake(s: String): String {
         val r = s.replace(
-            Regex("^(hey|hi|okay|ok)\\s+(cairo|kairo|kyro|cyro)[,.]?\\s*", RegexOption.IGNORE_CASE),
+            Regex("^(?:(?:hey|hi|okay|ok)\\s+)?(?:cairo|kairo|kyro|cyro)[,.]?\\s*", RegexOption.IGNORE_CASE),
             ""
         ).trim()
         return if (r.isEmpty()) s else r
@@ -661,7 +656,13 @@ class KairoService : Service() {
             return
         }
 
-        val phoneReply = PhoneActions.handle(this, text, ui != null)
+        val screenRequest = KairoScreenActions.summaryPrompt(text)
+        if (screenRequest != null && !screenRequest.first) {
+            localReply(text, screenRequest.second, fromVoice)
+            return
+        }
+        val phoneReply = KairoScreenActions.localAction(this, text)
+            ?: PhoneActions.handle(this, text, ui != null)
         if (phoneReply != null) {
             localReply(text, phoneReply, fromVoice)
             return
@@ -688,6 +689,12 @@ class KairoService : Service() {
         refresh()
 
         val snapshot = history.toMutableList()
+        if (screenRequest?.first == true && snapshot.isNotEmpty()) {
+            snapshot.removeAt(snapshot.lastIndex)
+            // Only this user-requested AI call includes visible chat / notification text.
+            // It is deliberately not written to the device conversation history.
+            snapshot.add("user" to screenRequest.second)
+        }
         if (PhoneState.wanted(text) && snapshot.isNotEmpty()) {
             val last = snapshot.removeAt(snapshot.size - 1)
             snapshot.add(last.first to (PhoneState.describe(this) + "\n" + last.second))
