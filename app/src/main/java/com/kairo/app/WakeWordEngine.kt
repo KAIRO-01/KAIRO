@@ -52,7 +52,7 @@ class WakeWordEngine(
             service?.shutdown()
             val rec = Recognizer(
                 m, 16000.0f,
-                "[\"hey cairo\", \"hi cairo\", \"okay cairo\", \"cairo\", \"stop\", \"cancel\", \"enough\", \"quiet\", \"[unk]\"]"
+                "[\"hey cairo\", \"hi cairo\", \"okay cairo\", \"cairo\", \"kairo\", \"hey kairo\", \"stop\", \"cancel\", \"enough\", \"quiet\", \"[unk]\"]"
             )
             val s = SpeechService(rec, 16000.0f)
             service = s
@@ -78,7 +78,7 @@ class WakeWordEngine(
     private fun check(h: String?) {
         if (h == null || !wantRunning) return
         val t = h.lowercase(Locale.ROOT)
-        if (t.contains("cairo") || t.contains("stop") || t.contains("cancel") ||
+        if (t.contains("cairo") || t.contains("kairo") || t.contains("stop") || t.contains("cancel") ||
             t.contains("enough") || t.contains("quiet")
         ) {
             onHeard(t)
