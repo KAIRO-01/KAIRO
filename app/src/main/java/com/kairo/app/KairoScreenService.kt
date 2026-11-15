@@ -2,6 +2,7 @@ package com.kairo.app
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.graphics.Rect
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
@@ -119,4 +120,79 @@ class KairoScreenService : AccessibilityService() {
         }
         return false
     }
+
+    /**
+     * Perform an explicitly confirmed WhatsApp Send only when ALL checks pass:
+     * 1. WhatsApp is the active application
+     * 2. Chat header identifies the intended recipient
+     * 3. Editable text equals the user's pending draft exactly
+     * 4. Exactly one visible, clickable Send control is found
+     *
+     * Returns false without clicking if the UI is unfamiliar or ambiguous.
+     */
+    fun sendVerifiedWhatsAppDraft(recipient: String, phone: String, body: String): Boolean {
+        val root = currentVisibleWhatsAppRoot() ?: return false
+        val screenHeight = resources.displayMetrics.heightPixels
+        val name = recipient.trim().lowercase(Locale.ROOT)
+        val lastTen = phone.filter { it.isDigit() }.takeLast(10)
+
+        val queue: ArrayDeque<AccessibilityNodeInfo> = ArrayDeque()
+        queue.add(root)
+        var visited = 0
+        var headerMatched = false
+        var draftMatched = false
+        val sendButtons = LinkedHashSet<AccessibilityNodeInfo>()
+        while (queue.isNotEmpty() && visited++ < 400) {
+            val node = queue.removeFirst()
+            if (!node.isVisibleToUser || node.isPassword) continue
+            val nodeText = node.text?.toString()?.trim().orEmpty()
+            val description = node.contentDescription?.toString()?.trim().orEmpty()
+            val rect = Rect()
+            node.getBoundsInScreen(rect)
+
+            // Only a visible conversation header near the TOP of the screen
+            // can confirm the recipient, not a name occurring in message text.
+            if (rect.top >= 0 && rect.top < screenHeight / 5 &&
+                !node.isEditable
+            ) {
+                for (candidate in listOf(nodeText, description)) {
+                    val label = candidate.lowercase(Locale.ROOT)
+                    val digits = candidate.filter { it.isDigit() }
+                    if ((name.isNotBlank() && label == name) ||
+                        (lastTen.length == 10 && digits.endsWith(lastTen))
+                    ) headerMatched = true
+                }
+            }
+
+            if (node.isEditable && nodeText == body) {
+                draftMatched = true
+            }
+
+            val resourceId = node.viewIdResourceName.orEmpty()
+            val shortDescription = description.lowercase(Locale.ROOT)
+            val isSend = resourceId == "com.whatsapp:id/send" ||
+                resourceId == "com.whatsapp.w4b:id/send" ||
+                shortDescription == "send" ||
+                shortDescription == "send message" ||
+                shortDescription == "भेजें"
+            if (isSend) {
+                var clickNode: AccessibilityNodeInfo? = node
+                var hops = 0
+                while (clickNode != null && hops++ < 4 && !clickNode.isClickable) {
+                    clickNode = clickNode.parent
+                }
+                if (clickNode?.isVisibleToUser == true && clickNode.isClickable) {
+                    sendButtons.add(clickNode)
+                }
+            }
+            for (i in 0 until node.childCount) {
+                node.getChild(i)?.let { queue.add(it) }
+            }
+        }
+        if (!headerMatched || !draftMatched || sendButtons.size != 1) return false
+
+        // Never tap without positive recipient AND content verification.
+        return sendButtons.single().performAction(AccessibilityNodeInfo.ACTION_CLICK)
+    }
+
 }

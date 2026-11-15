@@ -604,6 +604,14 @@ class KairoService : Service() {
             return
         }
 
+        // WhatsApp one-to-one sending is a LOCAL, permission-based action.
+        // No recipient name, phone number or drafted message is sent to Gemini.
+        val whatsappResult = WhatsAppSend.handle(this, text)
+        if (whatsappResult != null) {
+            localReply(text, whatsappResult, fromVoice)
+            return
+        }
+
         val screenRequest = KairoScreenActions.summaryPrompt(text)
         if (screenRequest != null && !screenRequest.first) {
             localReply(text, screenRequest.second, fromVoice)
