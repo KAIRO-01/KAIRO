@@ -25,6 +25,8 @@
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
+        <package android:name="com.whatsapp" />
+        <package android:name="com.whatsapp.w4b" />
     </queries>
 
     <application
@@ -47,5 +49,28 @@
             android:name=".KairoService"
             android:exported="false"
             android:foregroundServiceType="microphone" />
+        <!-- Enabled only by the user in Android Accessibility settings. -->
+        <service
+            android:name=".KairoScreenService"
+            android:label="KAIRO WhatsApp Screen Access"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/kairo_accessibility_service" />
+        </service>
+        <!-- Enabled only by the user in Android Notification Access settings. -->
+        <service
+            android:name=".KairoNotificationService"
+            android:label="KAIRO WhatsApp Notifications"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
     </application>
 </manifest>
