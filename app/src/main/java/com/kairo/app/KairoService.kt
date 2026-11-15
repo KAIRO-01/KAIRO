@@ -342,18 +342,20 @@ class KairoService : Service() {
             "stop" -> {
                 // "Stop" is a hard stop for KAIRO's spoken response only.
                 // Never speak an acknowledgement after a stop.
-                if (speaking && SystemClock.uptimeMillis() - speakStart >= 1100L) {
+                if (speaking && SystemClock.uptimeMillis() - speakStart >= 450L) {
                     stopSpeaking()
                     session = false
                     note = null
                     refresh()
                 }
             }
-            "wake" -> {
+            "wake", "bare_wake" -> {
                 if (!wakeOn) return
+                // A bare "KAIRO" heard from the phone speaker is not a safe barge-in.
+                if (speaking && command == "bare_wake") return
                 if (speaking) {
                     // A clear "Hey KAIRO" interrupts a long response deliberately.
-                    if (SystemClock.uptimeMillis() - speakStart < 1100L) return
+                    if (SystemClock.uptimeMillis() - speakStart < 450L) return
                     stopSpeaking()
                 }
                 onWakeDetected()
