@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Custom KAIRO icon: private-assistant monogram and listening waveform. -->
+    <path
+        android:fillColor="#061329"
+        android:pathData="M19,2 L89,2 C98,2 106,10 106,19 L106,89 C106,98 98,106 89,106 L19,106 C10,106 2,98 2,89 L2,19 C2,10 10,2 19,2 Z" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#0B58D6"
+        android:strokeWidth="3.5"
+        android:pathData="M19,3 L89,3 C98,3 105,10 105,19 L105,89 C105,98 98,105 89,105 L19,105 C10,105 3,98 3,89 L3,19 C3,10 10,3 19,3 Z" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#0B4DA8"
+        android:strokeWidth="5"
+        android:strokeLineCap="round"
+        android:pathData="M23,48 C27,29 41,18 60,18 C79,18 93,34 93,54 C93,76 76,91 54,91 C40,91 28,84 22,71" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#00DDF5"
+        android:strokeWidth="2.8"
+        android:strokeLineCap="round"
+        android:pathData="M20,49 C24,28 40,15 60,15 C78,15 87,27 91,35" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#25EAF9"
+        android:strokeWidth="3.3"
+        android:strokeLineCap="round"
+        android:pathData="M89,68 C84,82 71,92 54,93 C39,93 26,85 21,75" />
+    <path
+        android:fillColor="#EFF8FF"
+        android:pathData="M39,31 L49,31 L49,55 L67,31 L81,31 L61,55 L82,79 L67,79 L50,60 L49,61 L49,79 L39,79 Z" />
+    <path
+        android:fillColor="#00C9FB"
+        android:pathData="M61,55 L81,31 L67,31 L49,55 L49,60 Z" />
+    <path
+        android:fillColor="#0076ED"
+        android:pathData="M22,77 C32,83 37,78 48,66 L50,61 L49,78 C38,87 27,87 22,77 Z" />
+    <path
+        android:fillColor="#00CCFF"
+        android:pathData="M22,50 C22,48 24,47 25,50 L25,59 C25,62 22,62 22,59 Z M28,45 C28,42 31,42 31,45 L31,63 C31,66 28,66 28,63 Z M34,49 C34,47 37,47 37,49 L37,59 C37,62 34,62 34,59 Z" />
+    <path
+        android:fillColor="#79F7FF"
+        android:pathData="M81,14 L83,21 L89,23 L83,25 L81,32 L79,25 L73,23 L79,21 Z" />
+</vector>
