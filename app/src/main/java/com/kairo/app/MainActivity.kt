@@ -324,8 +324,23 @@ class MainActivity : Activity(), KairoService.Ui {
                 startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
             }
         }
+        val contactsAccess = Button(this).apply {
+            text = "Allow Contacts Access (for WhatsApp by name)"
+            setOnClickListener {
+                if (checkSelfPermission(android.Manifest.permission.READ_CONTACTS) !=
+                    PackageManager.PERMISSION_GRANTED
+                ) {
+                    requestPermissions(arrayOf(android.Manifest.permission.READ_CONTACTS), 7)
+                } else {
+                    android.widget.Toast.makeText(
+                        this@MainActivity, "Contacts access already allowed", android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+        }
         box.addView(screenAccess)
         box.addView(notificationAccess)
+        box.addView(contactsAccess)
         AlertDialog.Builder(this)
             .setTitle("Backend settings")
             .setView(box)
